@@ -55,10 +55,11 @@ class dns {
 		$data .= chr(0) . pack('n2', self::$RR[$rr], 1);
 
 		$fp = fsockopen("{$proto}://$at", 53, $errno, $errstr, $this->timeout);
-		if(!isset($fp)) throw new Exception($errstr, $errno);
+		if(!isset($fp)) return false;
 		fwrite($fp,$data);
 		$raw = fread($fp, 16384);
 		fclose($fp);
+		if($raw === false || !strlen($raw)) return false;
 
 		$head = unpack("nid/nspec/nqdcount/nancount/nnscount/narcount", substr($raw, 0, 12));
 		if($head['id'] != $qq || $head['qdcount'] != 1) return $this->lookup($rr, $name, $at, $depth, $tries + 1);
