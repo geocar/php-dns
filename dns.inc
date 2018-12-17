@@ -56,6 +56,7 @@ class dns {
 
 		$fp = fsockopen("{$proto}://$at", 53, $errno, $errstr, $this->timeout);
 		if(!isset($fp)) return false;
+		stream_set_timeout($fp, $this->timeout);
 		fwrite($fp,$data);
 		$raw = fread($fp, 16384);
 		fclose($fp);
