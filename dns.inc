@@ -4,7 +4,7 @@ class dns {
 	private $cache;
 	private $roots;
 
-	public static $RR = array("a" => 1, "mx" => 15, "ns" => 2, "cname" => 5, "txt" => 16); // rfc1034/1035
+	public static $RR = array("srv" => 33, "ptr" => 12, "aaaa" => 28, "a" => 1, "mx" => 15, "ns" => 2, "cname" => 5, "txt" => 16);
 	public static $ROOT_HINTS = array( // https://www.iana.org/domains/root/files
 		"a.root-servers.net" => "198.41.0.4",
 		"b.root-servers.net" => "199.9.14.201",
@@ -38,7 +38,8 @@ class dns {
 		if(isset($this->cache[$rrkey])) return $this->cache[$rrkey];
 
 		if($at == ".") {
-			foreach ($this->roots as $_root_name => $ip) {
+			$r = $this->roots; shuffle($r); // random order can help expose bugs
+			foreach ($r as $ip) {
 				$res = $this->lookup($rr, $name, $ip, $depth + 1);
 				if($res !== false) return $res;
 			}
@@ -54,13 +55,24 @@ class dns {
     }
 		$data .= chr(0) . pack('n2', self::$RR[$rr], 1);
 
-		$fp = fsockopen("{$proto}://$at", 53, $errno, $errstr, $this->timeout);
-		if(!isset($fp)) return false;
-		stream_set_timeout($fp, $this->timeout);
-		fwrite($fp,$data);
-		$raw = fread($fp, 16384);
-		fclose($fp);
-		if($raw === false || !strlen($raw)) return false;
+		$send_receive = function($delay = 0) use (&$proto, &$at, &$data) {
+			$fp = fsockopen("{$proto}://$at", 53, $errno, $errstr, $this->timeout);
+			if(!isset($fp)) return false;
+			stream_set_timeout($fp, $this->timeout + $delay);
+			fwrite($fp,$data);
+			$raw = fread($fp, 16384);
+			fclose($fp);
+			if($raw === false || !strlen($raw)) return false;
+			return $raw;
+		};
+
+		$raw = $send_receive();
+		if($raw === false && $proto === "udp") { // try slightly harder with udp...
+			$raw = $send_receive(1);
+			if($raw === false) $raw = $send_receive(3);
+			if($raw === false) $raw = $send_receive(5);
+		}
+		if($raw === false) return false;
 
 		$head = unpack("nid/nspec/nqdcount/nancount/nnscount/narcount", substr($raw, 0, 12));
 		if($head['id'] != $qq || $head['qdcount'] != 1) return $this->lookup($rr, $name, $at, $depth, $tries + 1);
@@ -114,15 +126,17 @@ class dns {
 			$off += 10;
 			$text = "";
 			if($rhead['type'] == self::$RR['ns']) { $ptr = $off; $text = $read_encoded_name($ptr); }
-			elseif($rhead['type'] == self::$RR['cname'] || $rhead['type'] == self::$RR['txt']) {
+			elseif($rhead['type'] == self::$RR['cname'] || $rhead['type'] == self::$RR['txt'] || $rhead['type'] === self::$RR['ptr']) {
 				$ptr = $off; $text = $read_encoded_name($ptr);
-				if($rr == 'a') return $this->lookup($rr, $text, ".", $depth + 1);
+				if($rr != 'cname') return $this->lookup($rr, $text, ".", $depth + 1);
 			} elseif($rhead['type'] == self::$RR['a']) {
-				$text = sprintf("%u.%u.%u.%u",
-					ord(substr($raw, $off, 1)),
-					ord(substr($raw, $off + 1, 1)),
-					ord(substr($raw, $off + 2, 1)),
-					ord(substr($raw, $off + 3, 1)));
+				$text = inet_ntop(substr($raw, $off, 4));
+			} elseif($rhead['type'] == self::$RR['aaaa']) {
+				$text = inet_ntop(substr($raw, $off, 16));
+			} elseif($rhead['type'] == self::$RR['srv']) {
+				$ptr = $off + 6; $ss = unpack('nprio/nweight/nport', substr($raw, $off, 6));
+				$z = $read_encoded_name($ptr);
+				$text = array($ss, $z);
 			} elseif($rhead['type'] == self::$RR['mx']) {
 				$ptr = $off + 2; $mm = unpack('npref', substr($raw, $off, 2));
 				$z = $read_encoded_name($ptr);
